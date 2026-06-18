@@ -5,8 +5,9 @@ import { Sidebar } from './components/Sidebar';
 import { FindReplace } from './components/FindReplace';
 import { SettingsModal, type FileSettings } from './components/SettingsModal';
 import { CommandPalette } from './components/CommandPalette';
+import { LicenseModal } from './components/LicenseModal';
 import { useHistory } from './hooks/useHistory';
-import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download, Settings } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download, Settings, Award } from 'lucide-react';
 import CSVWorker from './workers/csvParser.worker?worker';
 
 export default function App() {
@@ -71,6 +72,23 @@ export default function App() {
 
   // Notification Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  // Subscription/License state
+  const [licenseKey, setLicenseKey] = useState<string | null>(localStorage.getItem('ultra_csv_license'));
+  const [isLicenseOpen, setIsLicenseOpen] = useState(false);
+
+  const handleActivateLicense = (key: string): boolean => {
+    localStorage.setItem('ultra_csv_license', key);
+    setLicenseKey(key);
+    showToast('Pro features unlocked!', 'success');
+    return true;
+  };
+
+  const handleDeactivateLicense = () => {
+    localStorage.removeItem('ultra_csv_license');
+    setLicenseKey(null);
+    showToast('Switched to Free plan', 'info');
+  };
 
   // PWA Install Prompt state
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -816,6 +834,51 @@ export default function App() {
         )}
 
         <div className="header-actions">
+          {licenseKey ? (
+            <div
+              className="pro-badge-header"
+              onClick={() => setIsLicenseOpen(true)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                background: 'linear-gradient(135deg, #00f5d4, #7b2cbf)',
+                color: '#0a0a0f',
+                padding: '0.3rem 0.75rem',
+                borderRadius: '999px',
+                fontSize: '0.7rem',
+                fontWeight: 800,
+                cursor: 'pointer',
+                marginRight: '0.5rem',
+                boxShadow: '0 0 10px rgba(0, 245, 212, 0.3)',
+                letterSpacing: '0.05em'
+              }}
+              title="Pro Subscription Active - View License Details"
+            >
+              <Award size={12} />
+              PRO ACTIVE
+            </div>
+          ) : (
+            <button
+              className="btn btn-accent"
+              onClick={() => setIsLicenseOpen(true)}
+              style={{
+                marginRight: '0.5rem',
+                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-secondary)',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.8rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem'
+              }}
+              title="Activate Pro License"
+            >
+              <Award size={13} style={{ color: 'var(--accent)' }} />
+              <span>Go Pro</span>
+            </button>
+          )}
           {showInstallBtn && (
             <button
               className="btn btn-accent"
@@ -1108,6 +1171,15 @@ export default function App() {
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         commands={commands}
+      />
+
+      {/* License Modal overlay */}
+      <LicenseModal
+        isOpen={isLicenseOpen}
+        onClose={() => setIsLicenseOpen(false)}
+        currentLicense={licenseKey}
+        onActivate={handleActivateLicense}
+        onDeactivate={handleDeactivateLicense}
       />
     </div>
   );

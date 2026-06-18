@@ -20,7 +20,7 @@ export default function DownloadSection() {
           <p>Free and open-source. No account required. No telemetry.</p>
 
           <a
-            href="https://github.com/n1007Inbo/ultra-csv-editor/releases"
+            href="https://github.com/n1007Inbo/ultra-csv-editor/releases/download/v2.0.0/UltraCSV.Editor.Setup.0.0.0.exe"
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-primary btn-download"

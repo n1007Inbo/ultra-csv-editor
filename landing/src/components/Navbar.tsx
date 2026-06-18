@@ -21,6 +21,7 @@ export default function Navbar() {
 
         <ul className={`navbar-links${mobileOpen ? ' open' : ''}`}>
           <li><a href="#features" onClick={() => setMobileOpen(false)}>Features</a></li>
+          <li><a href="#pricing" onClick={() => setMobileOpen(false)}>Pricing</a></li>
           <li><a href="#download" onClick={() => setMobileOpen(false)}>Download</a></li>
           <li><a href="#compare" onClick={() => setMobileOpen(false)}>Compare</a></li>
         </ul>
