@@ -4,7 +4,7 @@ import { Grid } from './components/Grid';
 import { Sidebar } from './components/Sidebar';
 import { FindReplace } from './components/FindReplace';
 import { useHistory } from './hooks/useHistory';
-import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download } from 'lucide-react';
 import CSVWorker from './workers/csvParser.worker?worker';
 
 export default function App() {
@@ -24,6 +24,10 @@ export default function App() {
   
   // Notification Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  // PWA Install Prompt state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBtn, setShowInstallBtn] = useState(false);
 
   // Grid widths state
   const [columnWidths, setColumnWidths] = useState<number[]>([]);
@@ -56,6 +60,35 @@ export default function App() {
     canUndo,
     canRedo,
   } = useHistory([['', '', '']], ['A', 'B', 'C']);
+
+  // Listen for PWA installation trigger
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallBtn(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    // Detect if already installed / standalone
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setShowInstallBtn(false);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User install choice: ${outcome}`);
+    setDeferredPrompt(null);
+    setShowInstallBtn(false);
+  };
 
   // Web Worker ref
   const workerRef = useRef<Worker | null>(null);
@@ -568,6 +601,17 @@ export default function App() {
         )}
 
         <div className="header-actions">
+          {showInstallBtn && (
+            <button
+              className="btn btn-accent"
+              onClick={handleInstallApp}
+              title="Download and Install Desktop App"
+              style={{ marginRight: '0.5rem' }}
+            >
+              <Download size={14} />
+              <span>Download App</span>
+            </button>
+          )}
           <button
             className="btn btn-icon-only"
             onClick={toggleTheme}
