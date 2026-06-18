@@ -3,8 +3,10 @@ import { Toolbar } from './components/Toolbar';
 import { Grid } from './components/Grid';
 import { Sidebar } from './components/Sidebar';
 import { FindReplace } from './components/FindReplace';
+import { SettingsModal, type FileSettings } from './components/SettingsModal';
+import { CommandPalette } from './components/CommandPalette';
 import { useHistory } from './hooks/useHistory';
-import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download, Settings } from 'lucide-react';
 import CSVWorker from './workers/csvParser.worker?worker';
 
 export default function App() {
@@ -19,9 +21,54 @@ export default function App() {
   // Layout & Styling state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isFindOpen, setIsFindOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [dragActive, setDragActive] = useState(false);
   
+  // Modern CSV settings & filters state
+  const [settings, setSettings] = useState<FileSettings>({
+    delimiter: ',',
+    encoding: 'UTF-8',
+    lineEnding: 'LF',
+    hasHeader: true,
+    readOnly: false,
+    freezeRows: 0,
+    freezeCols: 0,
+    zebraStripes: true,
+  });
+  const [activeFilters, setActiveFilters] = useState<{ [colIndex: number]: string }>({});
+
+  const handleFilterColumn = useCallback((colIndex: number, query: string) => {
+    setActiveFilters(prev => {
+      const next = { ...prev };
+      if (!query.trim()) {
+        delete next[colIndex];
+      } else {
+        next[colIndex] = query.trim().toLowerCase();
+      }
+      return next;
+    });
+  }, []);
+
+  // Recent files state
+  const [recentFiles, setRecentFiles] = useState<{ name: string; size: string; timestamp: number }[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ultra_csv_recent_files') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const addRecentFile = useCallback((name: string, size: string) => {
+    setRecentFiles(prev => {
+      const filtered = prev.filter(f => f.name !== name);
+      const next = [{ name, size, timestamp: Date.now() }, ...filtered].slice(0, 5);
+      localStorage.setItem('ultra_csv_recent_files', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   // Notification Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
@@ -31,6 +78,7 @@ export default function App() {
 
   // Grid widths state
   const [columnWidths, setColumnWidths] = useState<number[]>([]);
+  const nativeFilePathRef = useRef<string | null>(null);
 
   // Selection state
   const [activeCell, setActiveCell] = useState<{ row: number; col: number } | null>(null);
@@ -159,17 +207,27 @@ export default function App() {
           });
         }
       } else if (type === 'UNPARSE_SUCCESS') {
-        // Trigger file download
-        const blob = new Blob([payload], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.setAttribute('href', url);
-        link.setAttribute('download', fileName);
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        showToast('CSV exported successfully', 'success');
+        if (window.electronAPI && nativeFilePathRef.current) {
+          window.electronAPI.saveFile(nativeFilePathRef.current, payload)
+            .then(() => {
+              showToast('File saved successfully', 'success');
+            })
+            .catch((err: any) => {
+              showToast(`Save failed: ${err.message}`, 'error');
+            });
+        } else {
+          // Trigger file download
+          const blob = new Blob([payload], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.setAttribute('href', url);
+          link.setAttribute('download', fileName);
+          link.style.visibility = 'hidden';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          showToast('CSV exported successfully', 'success');
+        }
       } else if (type === 'PARSE_ERROR' || type === 'UNPARSE_ERROR') {
         showToast(payload, 'error');
       }
@@ -209,21 +267,47 @@ export default function App() {
   const handleFileLoad = (file: File) => {
     setFileName(file.name);
     showToast(`Parsing ${file.name}...`, 'info');
+    addRecentFile(file.name, formatBytes(file.size));
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      workerRef.current?.postMessage({
-        type: 'PARSE_CSV',
-        payload: {
-          text,
-          config: {
-            size: file.size,
-          },
+    workerRef.current?.postMessage({
+      type: 'PARSE_CSV',
+      payload: {
+        file,
+        config: {
+          delimiter: settings.delimiter === ',' ? undefined : settings.delimiter,
         },
-      });
-    };
-    reader.readAsText(file);
+      },
+    });
+  };
+
+  const handleBrowseFile = async () => {
+    if (window.electronAPI) {
+      try {
+        const fileInfo = await window.electronAPI.openFile();
+        if (!fileInfo) return;
+
+        setFileName(fileInfo.name);
+        nativeFilePathRef.current = fileInfo.filePath;
+        showToast(`Opening ${fileInfo.name}...`, 'info');
+        addRecentFile(fileInfo.name, formatBytes(fileInfo.size));
+
+        const text = await window.electronAPI.readChunk(fileInfo.filePath);
+        workerRef.current?.postMessage({
+          type: 'PARSE_CSV',
+          payload: {
+            text,
+            config: {
+              size: fileInfo.size,
+              delimiter: settings.delimiter === ',' ? undefined : settings.delimiter,
+            },
+          },
+        });
+      } catch (err: any) {
+        showToast(err.message || 'Failed to open file natively', 'error');
+      }
+    } else {
+      document.querySelector<HTMLInputElement>('input[type="file"]')?.click();
+    }
   };
 
   // Create new blank CSV
@@ -237,7 +321,7 @@ export default function App() {
     setFileName('Untitled.csv');
     setFileMeta({
       size: '0 Bytes',
-      delimiter: 'Comma',
+      delimiter: settings.delimiter,
       encoding: 'UTF-8',
     });
     setHasActiveFile(true);
@@ -251,14 +335,15 @@ export default function App() {
     if (!workerRef.current) return;
     showToast('Exporting CSV...', 'info');
     
-    // Stitch headers back as first row of output
-    const fullOutput = [columns, ...data];
+    // Stitch headers back as first row of output if configured
+    const fullOutput = settings.hasHeader ? [columns, ...data] : data;
     workerRef.current.postMessage({
       type: 'UNPARSE_CSV',
       payload: {
         data: fullOutput,
         config: {
-          delimiter: ',',
+          delimiter: settings.delimiter,
+          newline: settings.lineEnding === 'CRLF' ? '\r\n' : '\n',
         },
       },
     });
@@ -570,6 +655,69 @@ export default function App() {
     showToast(`Converted cells to ${mode}case`, 'success');
   };
 
+  const handleFillSeries = useCallback(() => {
+    if (!selection) return;
+    const minRow = Math.min(selection.startRow, selection.endRow);
+    const maxRow = Math.max(selection.startRow, selection.endRow);
+    const minCol = Math.min(selection.startCol, selection.endCol);
+    const maxCol = Math.max(selection.startCol, selection.endCol);
+
+    const startValue = data[minRow][minCol] || '';
+    const num = Number(startValue);
+    const isNumber = !isNaN(num) && startValue.trim() !== '';
+
+    const newData = data.map((row, r) => {
+      if (r >= minRow && r <= maxRow) {
+        return row.map((cell, c) => {
+          if (c >= minCol && c <= maxCol) {
+            if (isNumber) {
+              const step = (r - minRow) + (c - minCol);
+              return String(num + step);
+            } else {
+              return startValue;
+            }
+          }
+          return cell;
+        });
+      }
+      return row;
+    });
+
+    pushState(newData, columns);
+    showToast('Filled selection series', 'success');
+  }, [selection, data, columns, pushState]);
+
+  const handleGenerateUUIDs = useCallback(() => {
+    if (!selection) return;
+    const minRow = Math.min(selection.startRow, selection.endRow);
+    const maxRow = Math.max(selection.startRow, selection.endRow);
+    const minCol = Math.min(selection.startCol, selection.endCol);
+    const maxCol = Math.max(selection.startCol, selection.endCol);
+
+    const uuidv4 = () => {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    };
+
+    const newData = data.map((row, r) => {
+      if (r >= minRow && r <= maxRow) {
+        return row.map((cell, c) => {
+          if (c >= minCol && c <= maxCol) {
+            return uuidv4();
+          }
+          return cell;
+        });
+      }
+      return row;
+    });
+
+    pushState(newData, columns);
+    showToast('Generated UUIDs in selected cells', 'success');
+  }, [selection, data, columns, pushState]);
+
   // Column renaming
   const handleRenameColumn = (colIndex: number, newName: string) => {
     if (!newName.trim()) return;
@@ -579,6 +727,73 @@ export default function App() {
     pushState(data, newColumns);
     showToast(`Column renamed to ${newName}`, 'success');
   };
+
+  // Filter active indices
+  const visibleRowIndices = useMemo(() => {
+    const indices: number[] = [];
+    data.forEach((row, r) => {
+      let matches = true;
+      for (const [colIdxStr, filterText] of Object.entries(activeFilters)) {
+        const colIdx = parseInt(colIdxStr);
+        const cellValue = (row[colIdx] || '').toLowerCase();
+        if (!cellValue.includes(filterText)) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        indices.push(r);
+      }
+    });
+    return indices;
+  }, [data, activeFilters]);
+
+  // Command palette items
+  const commands = useMemo(() => {
+    const list = [
+      { id: 'new-file', label: 'Create New CSV Grid', category: 'File', action: handleNewFile },
+      { id: 'open-file', label: 'Open CSV File...', category: 'File', action: () => document.querySelector<HTMLInputElement>('input[type="file"]')?.click() },
+      { id: 'export-csv', label: 'Export to CSV File', category: 'File', action: handleDownload },
+      { id: 'preferences', label: 'Open Preferences & Settings', category: 'Settings', action: () => setIsSettingsOpen(true), shortcut: 'Ctrl+,' },
+      { id: 'toggle-theme', label: 'Toggle Dark/Light Theme', category: 'Settings', action: toggleTheme },
+      { id: 'toggle-zebra', label: 'Toggle Alternating Row Colors (Zebra)', category: 'Settings', action: () => setSettings(s => ({ ...s, zebraStripes: !s.zebraStripes })) },
+    ];
+
+    if (hasActiveFile) {
+      list.push(
+        { id: 'undo', label: 'Undo Last Edit', category: 'Edit', action: undo, shortcut: 'Ctrl+Z' },
+        { id: 'redo', label: 'Redo Last Edit', category: 'Edit', action: redo, shortcut: 'Ctrl+Y' },
+        { id: 'find-replace', label: 'Find & Replace Panel', category: 'Edit', action: () => setIsFindOpen(true), shortcut: 'Ctrl+F' },
+        { id: 'clear-selection', label: 'Clear Selected Cells', category: 'Edit', action: handleClearCells },
+        { id: 'trim-whitespace', label: 'Trim Whitespace in Selection', category: 'Format', action: handleTrimWhitespace },
+        { id: 'uppercase', label: 'Convert Selection to UPPERCASE', category: 'Format', action: () => handleChangeCase('upper') },
+        { id: 'lowercase', label: 'Convert Selection to lowercase', category: 'Format', action: () => handleChangeCase('lower') },
+        { id: 'titlecase', label: 'Convert Selection to Title Case', category: 'Format', action: () => handleChangeCase('title') },
+        { id: 'fill-series', label: 'Fill Series in Selection (Numeric Increment)', category: 'Advanced', action: handleFillSeries },
+        { id: 'generate-uuids', label: 'Generate UUIDs in Selection', category: 'Advanced', action: handleGenerateUUIDs },
+        { id: 'clear-filters', label: 'Clear All Active Column Filters', category: 'Filters', action: () => setActiveFilters({}) }
+      );
+    }
+    return list;
+  }, [hasActiveFile, undo, redo, handleClearCells, handleTrimWhitespace, handleChangeCase, handleFillSeries, handleGenerateUUIDs, toggleTheme]);
+
+  // Global keydown listeners for shortcuts
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      // Ctrl+L or F1 for command palette
+      if (((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) || e.key === 'F1') {
+        e.preventDefault();
+        setIsCommandPaletteOpen(prev => !prev);
+      }
+      // Ctrl+Comma for settings/preferences
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setIsSettingsOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts);
+  }, []);
 
   return (
     <div className="app-container" onDragEnter={handleDrag}>
@@ -594,7 +809,7 @@ export default function App() {
             <span className="file-name">{fileName}</span>
             {fileMeta && (
               <span className="file-meta">
-                ({fileMeta.size} • Delimiter: {fileMeta.delimiter})
+                ({fileMeta.size} • Delimiter: {settings.delimiter === ',' ? 'Comma' : settings.delimiter === ';' ? 'Semicolon' : settings.delimiter === '\t' ? 'Tab' : settings.delimiter})
               </span>
             )}
           </div>
@@ -614,6 +829,14 @@ export default function App() {
           )}
           <button
             className="btn btn-icon-only"
+            onClick={() => setIsSettingsOpen(true)}
+            title="File Settings & Preferences (Ctrl+,)"
+            style={{ border: 'none', background: 'none' }}
+          >
+            <Settings size={18} />
+          </button>
+          <button
+            className="btn btn-icon-only"
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
             style={{ border: 'none', background: 'none' }}
@@ -626,6 +849,7 @@ export default function App() {
       {/* Toolbar Options */}
       <Toolbar
         onFileSelect={handleFileLoad}
+        onOpenFile={handleBrowseFile}
         onDownload={handleDownload}
         onNewFile={handleNewFile}
         canUndo={canUndo}
@@ -707,6 +931,13 @@ export default function App() {
               setActiveCell({ row: r, col: 0 });
               handleDuplicateRow();
             }}
+            freezeRows={settings.freezeRows}
+            freezeCols={settings.freezeCols}
+            zebraStripes={settings.zebraStripes}
+            readOnly={settings.readOnly}
+            activeFilters={activeFilters}
+            onFilterColumn={handleFilterColumn}
+            visibleRowIndices={visibleRowIndices}
           />
         ) : (
           <div
@@ -722,25 +953,65 @@ export default function App() {
             <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.95rem' }}>
               Drag and drop your spreadsheet here, or click to create a blank workspace
             </p>
-            <div style={{ display: 'flex', gap: '1rem' }}>
-              <label className="btn btn-primary" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
+              <button className="btn btn-primary" onClick={(e) => { e.stopPropagation(); handleBrowseFile(); }}>
                 <FileSpreadsheet size={16} />
                 Browse Files
-                <input
-                  type="file"
-                  accept=".csv,.txt,.tsv"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleFileLoad(e.target.files[0]);
-                    }
-                  }}
-                />
-              </label>
+              </button>
+              <input
+                type="file"
+                accept=".csv,.txt,.tsv"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    handleFileLoad(e.target.files[0]);
+                  }
+                }}
+              />
               <button className="btn" onClick={(e) => { e.stopPropagation(); handleNewFile(); }}>
                 Create Blank
               </button>
             </div>
+
+            {recentFiles.length > 0 && (
+              <div className="recent-files-box" style={{ width: '100%', maxWidth: '440px', marginTop: '1rem' }} onClick={(e) => e.stopPropagation()}>
+                <h4 style={{
+                  marginBottom: '0.75rem',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-secondary)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px',
+                  fontWeight: 600
+                }}>Recent Files</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {recentFiles.map((file, i) => (
+                    <div
+                      key={i}
+                      className="recent-file-item"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '0.6rem 1rem',
+                        backgroundColor: 'var(--bg-secondary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '8px',
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                      onClick={() => {
+                        // Trigger file dialog
+                        document.querySelector<HTMLInputElement>('input[type="file"]')?.click();
+                      }}
+                    >
+                      <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{file.name}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{file.size}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -770,10 +1041,25 @@ export default function App() {
                 <strong>Active:</strong> {getColLetter(activeCell.col)}{activeCell.row + 1}
               </span>
             )}
+            {settings.readOnly && (
+              <span className="status-item" style={{ color: 'var(--danger)', fontWeight: 600 }}>
+                READ-ONLY
+              </span>
+            )}
+            {settings.freezeRows > 0 && (
+              <span className="status-item" style={{ color: 'var(--accent)' }}>
+                Rows Frozen: {settings.freezeRows}
+              </span>
+            )}
+            {settings.freezeCols > 0 && (
+              <span className="status-item" style={{ color: 'var(--accent)' }}>
+                Cols Frozen: {settings.freezeCols}
+              </span>
+            )}
           </div>
           <div className="status-right">
             <span className="status-item" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Keyboard shortcuts active • Press Esc to cancel edit
+              Ctrl+L: Command Palette • Ctrl+,: Preferences • Press Esc to cancel edit
             </span>
           </div>
         </footer>
@@ -805,6 +1091,24 @@ export default function App() {
           <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{toast.message}</span>
         </div>
       )}
+
+      {/* Settings Modal overlay */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={settings}
+        onApply={(newSettings) => {
+          setSettings(newSettings);
+          showToast('Preferences updated', 'success');
+        }}
+      />
+
+      {/* Command Palette overlay */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        commands={commands}
+      />
     </div>
   );
 }
