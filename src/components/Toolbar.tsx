@@ -17,6 +17,7 @@ import {
 
 interface ToolbarProps {
   onFileSelect: (file: File) => void;
+  onOpenFile?: () => void;
   onDownload: () => void;
   onNewFile: () => void;
   canUndo: boolean;
@@ -45,6 +46,7 @@ interface ToolbarProps {
 
 export const Toolbar: React.FC<ToolbarProps> = ({
   onFileSelect,
+  onOpenFile,
   onDownload,
   onNewFile,
   canUndo,
@@ -74,7 +76,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   };
 
   const triggerFileSelect = () => {
-    fileInputRef.current?.click();
+    if (window.electronAPI && onOpenFile) {
+      onOpenFile();
+    } else {
+      fileInputRef.current?.click();
+    }
   };
 
   return (

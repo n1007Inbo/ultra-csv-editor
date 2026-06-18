@@ -4,9 +4,10 @@ self.onmessage = (e: MessageEvent) => {
   const { type, payload } = e.data;
 
   if (type === 'PARSE_CSV') {
-    const { text, config } = payload;
+    const { text, file, config } = payload;
     try {
-      const result = Papa.parse(text, {
+      const input = file || text;
+      const result = Papa.parse(input, {
         skipEmptyLines: false, // We want to show empty rows too
         dynamicTyping: false,   // Keep everything as string for editor editing
         ...config,
@@ -17,7 +18,10 @@ self.onmessage = (e: MessageEvent) => {
         payload: {
           data: result.data,
           errors: result.errors,
-          meta: result.meta,
+          meta: {
+            ...result.meta,
+            size: file ? file.size : (config?.size || 0),
+          },
         },
       });
     } catch (err: any) {

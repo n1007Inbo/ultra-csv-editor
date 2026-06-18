@@ -32,6 +32,15 @@ interface GridProps {
   onInsertRow: (rowIndex: number, where: 'above' | 'below') => void;
   onDeleteRow: (rowIndex: number) => void;
   onDuplicateRow: (rowIndex: number) => void;
+
+  // Modern CSV Features
+  freezeRows: number;
+  freezeCols: number;
+  zebraStripes: boolean;
+  readOnly: boolean;
+  activeFilters: { [colIndex: number]: string };
+  onFilterColumn: (colIndex: number, query: string) => void;
+  visibleRowIndices: number[];
 }
 
 export const Grid: React.FC<GridProps> = ({
@@ -53,6 +62,13 @@ export const Grid: React.FC<GridProps> = ({
   onInsertRow,
   onDeleteRow,
   onDuplicateRow,
+  freezeRows,
+  freezeCols,
+  zebraStripes,
+  readOnly,
+  activeFilters,
+  onFilterColumn,
+  visibleRowIndices,
 }) => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -84,7 +100,10 @@ export const Grid: React.FC<GridProps> = ({
   const [renameValue, setRenameValue] = useState('');
 
   const rowHeight = 32;
-  const numRows = data.length;
+  const rowIndices = useMemo(() => {
+    return visibleRowIndices || Array.from({ length: data.length }, (_, i) => i);
+  }, [visibleRowIndices, data.length]);
+  const numRows = rowIndices.length;
 
   // Track viewport height using ResizeObserver
   useEffect(() => {
@@ -158,7 +177,7 @@ export const Grid: React.FC<GridProps> = ({
 
   // Paste from clipboard (TSV format)
   const pasteSelection = useCallback(async () => {
-    if (!activeCell) return;
+    if (!activeCell || readOnly) return;
     try {
       const text = await navigator.clipboard.readText();
       const rows = text.split(/\r?\n/).map(row => row.split('\t'));
@@ -187,7 +206,7 @@ export const Grid: React.FC<GridProps> = ({
     } catch (err) {
       console.error('Failed to read from clipboard', err);
     }
-  }, [activeCell, data, columns, onChangeData, setSelection]);
+  }, [activeCell, data, columns, onChangeData, setSelection, readOnly]);
 
   // Handle global clipboard actions
   useEffect(() => {
@@ -200,6 +219,7 @@ export const Grid: React.FC<GridProps> = ({
           e.preventDefault();
           copySelection();
         } else if (e.key === 'v' || e.key === 'V') {
+          if (readOnly) return;
           e.preventDefault();
           pasteSelection();
         } else if (e.key === 'a' || e.key === 'A') {
@@ -322,7 +342,7 @@ export const Grid: React.FC<GridProps> = ({
         e.preventDefault();
         break;
       case 'Enter':
-        if (activeCell) {
+        if (activeCell && !readOnly) {
           setIsEditing(true);
           setEditValue(data[activeCell.row][activeCell.col] || '');
           e.preventDefault();
@@ -330,7 +350,7 @@ export const Grid: React.FC<GridProps> = ({
         break;
       case 'Delete':
       case 'Backspace':
-        if (selection) {
+        if (selection && !readOnly) {
           const minRow = Math.min(selection.startRow, selection.endRow);
           const maxRow = Math.max(selection.startRow, selection.endRow);
           const minCol = Math.min(selection.startCol, selection.endCol);
@@ -348,7 +368,7 @@ export const Grid: React.FC<GridProps> = ({
         break;
       default:
         // Start typing to edit cell directly
-        if (activeCell && !e.ctrlKey && !e.metaKey && e.key.length === 1) {
+        if (activeCell && !readOnly && !e.ctrlKey && !e.metaKey && e.key.length === 1) {
           setIsEditing(true);
           setEditValue(e.key);
           e.preventDefault();
@@ -358,10 +378,25 @@ export const Grid: React.FC<GridProps> = ({
   };
 
   const saveEdit = () => {
-    if (!activeCell) return;
+    if (!activeCell || readOnly) return;
+    
+    const shouldApplyToSelection = selection && 
+      (selection.startRow !== selection.endRow || selection.startCol !== selection.endCol);
+
     const newData = data.map((row, r) => {
-      if (r === activeCell.row) {
-        return row.map((cell, c) => (c === activeCell.col ? editValue : cell));
+      if (shouldApplyToSelection) {
+        const minRow = Math.min(selection!.startRow, selection!.endRow);
+        const maxRow = Math.max(selection!.startRow, selection!.endRow);
+        const minCol = Math.min(selection!.startCol, selection!.endCol);
+        const maxCol = Math.max(selection!.startCol, selection!.endCol);
+
+        if (r >= minRow && r <= maxRow) {
+          return row.map((cell, c) => (c >= minCol && c <= maxCol ? editValue : cell));
+        }
+      } else {
+        if (r === activeCell.row) {
+          return row.map((cell, c) => (c === activeCell.col ? editValue : cell));
+        }
       }
       return row;
     });
@@ -507,73 +542,202 @@ export const Grid: React.FC<GridProps> = ({
                   height: '38px',
                 }}
               />
-              {columns.map((col, c) => (
-                <th
-                  key={c}
-                  className="grid-header-cell"
-                  style={{
-                    width: columnWidths[c],
-                    position: 'sticky',
-                    top: 0,
-                    zIndex: 8,
-                    height: '38px',
-                  }}
-                  onContextMenu={(e) => handleHeaderContextMenu(c, e)}
-                >
-                  {col}
-                  <div
-                    className={`grid-header-resizer ${resizingCol === c ? 'resizing' : ''}`}
-                    onMouseDown={(e) => handleResizeMouseDown(c, e)}
-                  />
-                </th>
-              ))}
+              {columns.map((col, c) => {
+                const isColFrozen = c < freezeCols;
+                const isFiltered = activeFilters[c] !== undefined && activeFilters[c] !== '';
+                const leftPos = isColFrozen ? (() => {
+                  let left = 50;
+                  for (let i = 0; i < c; i++) {
+                    left += columnWidths[i] || 120;
+                  }
+                  return left;
+                })() : undefined;
+
+                return (
+                  <th
+                    key={c}
+                    className="grid-header-cell"
+                    style={{
+                      width: columnWidths[c],
+                      position: 'sticky',
+                      top: 0,
+                      left: leftPos,
+                      zIndex: isColFrozen ? 10 : 8,
+                      height: '38px',
+                    }}
+                    onContextMenu={(e) => handleHeaderContextMenu(c, e)}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span>{col}</span>
+                      {isFiltered && <span style={{ color: 'var(--accent)', marginLeft: '4px', fontSize: '10px' }} title={`Filtered: "${activeFilters[c]}"`}>⚡</span>}
+                    </div>
+                    <div
+                      className={`grid-header-resizer ${resizingCol === c ? 'resizing' : ''}`}
+                      onMouseDown={(e) => handleResizeMouseDown(c, e)}
+                    />
+                  </th>
+                );
+              })}
             </tr>
           </thead>
 
           {/* Table Body Virtualized */}
           <tbody style={{ position: 'relative' }}>
-            {/* Scroll runway spacer to trigger parent scrollbar */}
-            <tr style={{ height: startIndex * rowHeight }} />
+            {/* Frozen Rows */}
+            {Array.from({ length: Math.min(freezeRows, numRows) }).map((_, idx) => {
+              return (() => {
+                const r = rowIndices[idx];
+                if (r === undefined) return null;
+                const row = data[r];
+                if (!row) return null;
 
-            {data.slice(startIndex, endIndex + 1).map((row, relativeIndex) => {
-              const r = startIndex + relativeIndex;
+                const rowIndexStyle: React.CSSProperties = {
+                  height: rowHeight,
+                  left: 0,
+                };
+                rowIndexStyle.position = 'sticky';
+                rowIndexStyle.top = 38 + idx * rowHeight;
+                rowIndexStyle.zIndex = 7;
+
+                return (
+                  <tr key={r} className="grid-row" style={{ height: rowHeight }}>
+                    <td
+                      className="grid-row-index-cell"
+                      style={rowIndexStyle}
+                      onContextMenu={(e) => handleRowContextMenu(r, e)}
+                    >
+                      {r + 1}
+                    </td>
+
+                    {columns.map((_, c) => {
+                      const selected = isCellSelected(r, c);
+                      const active = isCellActive(r, c);
+                      const { isActive, isMatched } = getSearchMatchStatus(r, c);
+                      const isColFrozen = c < freezeCols;
+
+                      let cellStyle: React.CSSProperties = {
+                        width: columnWidths[c],
+                      };
+
+                      cellStyle.position = 'sticky';
+                      cellStyle.top = 38 + idx * rowHeight;
+                      cellStyle.zIndex = isColFrozen ? 9 : 6;
+
+                      if (isColFrozen) {
+                        let left = 50;
+                        for (let i = 0; i < c; i++) {
+                          left += columnWidths[i] || 120;
+                        }
+                        cellStyle.left = left;
+                      }
+
+                      if (isActive) {
+                        cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                        cellStyle.outline = '2px solid #ffc107';
+                        cellStyle.outlineOffset = '-2px';
+                        cellStyle.zIndex = 11;
+                      } else if (isMatched) {
+                        cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.15)';
+                      }
+
+                      const isZebra = zebraStripes && idx % 2 === 1;
+
+                      return (
+                        <td
+                          key={c}
+                          className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''} ${isZebra ? 'zebra' : ''}`}
+                          style={cellStyle}
+                          onMouseDown={(e) => handleCellMouseDown(r, c, e)}
+                          onMouseEnter={() => handleCellMouseEnter(r, c)}
+                          onDoubleClick={() => {
+                            if (readOnly) return;
+                            setIsEditing(true);
+                            setEditValue(row[c] || '');
+                          }}
+                        >
+                          {active && isEditing ? (
+                            <input
+                              ref={editorRef}
+                              className="grid-cell-editor"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={saveEdit}
+                            />
+                          ) : (
+                            row[c] || ''
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })();
+            })}
+
+            {/* Scroll runway spacer to trigger parent scrollbar */}
+            <tr style={{ height: Math.max(0, (Math.max(freezeRows, startIndex) - freezeRows) * rowHeight) }} />
+
+            {/* Virtualized Rows */}
+            {rowIndices.slice(Math.max(freezeRows, startIndex), endIndex + 1).map((r, relativeIndex) => {
+              const idx = Math.max(freezeRows, startIndex) + relativeIndex;
+              const row = data[r];
+              if (!row) return null;
+
+              const rowIndexStyle: React.CSSProperties = {
+                height: rowHeight,
+                left: 0,
+              };
+
               return (
                 <tr key={r} className="grid-row" style={{ height: rowHeight }}>
-                  {/* Row number sticky cell */}
                   <td
                     className="grid-row-index-cell"
-                    style={{ height: rowHeight, left: 0 }}
+                    style={rowIndexStyle}
                     onContextMenu={(e) => handleRowContextMenu(r, e)}
                   >
                     {r + 1}
                   </td>
 
-                  {/* Row content */}
                   {columns.map((_, c) => {
                     const selected = isCellSelected(r, c);
                     const active = isCellActive(r, c);
                     const { isActive, isMatched } = getSearchMatchStatus(r, c);
-                    
+                    const isColFrozen = c < freezeCols;
+
                     let cellStyle: React.CSSProperties = {
                       width: columnWidths[c],
                     };
+
+                    if (isColFrozen) {
+                      cellStyle.position = 'sticky';
+                      let left = 50;
+                      for (let i = 0; i < c; i++) {
+                        left += columnWidths[i] || 120;
+                      }
+                      cellStyle.left = left;
+                      cellStyle.zIndex = 4;
+                    }
 
                     if (isActive) {
                       cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.4)';
                       cellStyle.outline = '2px solid #ffc107';
                       cellStyle.outlineOffset = '-2px';
+                      cellStyle.zIndex = 11;
                     } else if (isMatched) {
                       cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.15)';
                     }
 
+                    const isZebra = zebraStripes && idx % 2 === 1;
+
                     return (
                       <td
                         key={c}
-                        className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''}`}
+                        className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''} ${isZebra ? 'zebra' : ''}`}
                         style={cellStyle}
                         onMouseDown={(e) => handleCellMouseDown(r, c, e)}
                         onMouseEnter={() => handleCellMouseEnter(r, c)}
                         onDoubleClick={() => {
+                          if (readOnly) return;
                           setIsEditing(true);
                           setEditValue(row[c] || '');
                         }}
@@ -611,66 +775,94 @@ export const Grid: React.FC<GridProps> = ({
         >
           {contextMenu.type === 'column' ? (
             <>
-              <div
-                className="context-menu-item"
-                onClick={() => {
-                  setRenameValue(columns[contextMenu.index]);
-                  setRenamingColIndex(contextMenu.index);
-                  setContextMenu(null);
-                }}
-              >
-                <FolderEdit size={14} />
-                <span>Rename Column</span>
-              </div>
-              <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => onSortColumn(contextMenu.index, 'asc')}>
+              {!readOnly && (
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    setRenameValue(columns[contextMenu.index]);
+                    setRenamingColIndex(contextMenu.index);
+                    setContextMenu(null);
+                  }}
+                >
+                  <FolderEdit size={14} />
+                  <span>Rename Column</span>
+                </div>
+              )}
+              {!readOnly && <div className="context-menu-divider" />}
+              <div className="context-menu-item" onClick={() => { onSortColumn(contextMenu.index, 'asc'); setContextMenu(null); }}>
                 <span>Sort A-Z</span>
               </div>
-              <div className="context-menu-item" onClick={() => onSortColumn(contextMenu.index, 'desc')}>
+              <div className="context-menu-item" onClick={() => { onSortColumn(contextMenu.index, 'desc'); setContextMenu(null); }}>
                 <span>Sort Z-A</span>
               </div>
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => onInsertColumn(contextMenu.index, 'left')}>
-                <Plus size={14} />
-                <span>Insert Left</span>
-              </div>
-              <div className="context-menu-item" onClick={() => onInsertColumn(contextMenu.index, 'right')}>
-                <Plus size={14} />
-                <span>Insert Right</span>
-              </div>
-              <div className="context-menu-divider" />
               <div
                 className="context-menu-item"
-                onClick={() => onDeleteColumn(contextMenu.index)}
-                style={{ color: 'var(--danger)' }}
+                onClick={() => {
+                  const currentFilter = activeFilters[contextMenu.index] || '';
+                  const query = prompt(`Filter column "${columns[contextMenu.index]}" by text (empty to clear):`, currentFilter);
+                  if (query !== null) {
+                    onFilterColumn(contextMenu.index, query);
+                  }
+                  setContextMenu(null);
+                }}
               >
-                <Trash2 size={14} />
-                <span>Delete Column</span>
+                <span>Filter Column...</span>
               </div>
+              {!readOnly && (
+                <>
+                  <div className="context-menu-divider" />
+                  <div className="context-menu-item" onClick={() => { onInsertColumn(contextMenu.index, 'left'); setContextMenu(null); }}>
+                    <Plus size={14} />
+                    <span>Insert Left</span>
+                  </div>
+                  <div className="context-menu-item" onClick={() => { onInsertColumn(contextMenu.index, 'right'); setContextMenu(null); }}>
+                    <Plus size={14} />
+                    <span>Insert Right</span>
+                  </div>
+                  <div className="context-menu-divider" />
+                  <div
+                    className="context-menu-item"
+                    onClick={() => { onDeleteColumn(contextMenu.index); setContextMenu(null); }}
+                    style={{ color: 'var(--danger)' }}
+                  >
+                    <Trash2 size={14} />
+                    <span>Delete Column</span>
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <>
-              <div className="context-menu-item" onClick={() => onInsertRow(contextMenu.index, 'above')}>
-                <Plus size={14} />
-                <span>Insert Above</span>
-              </div>
-              <div className="context-menu-item" onClick={() => onInsertRow(contextMenu.index, 'below')}>
-                <Plus size={14} />
-                <span>Insert Below</span>
-              </div>
-              <div className="context-menu-item" onClick={() => onDuplicateRow(contextMenu.index)}>
-                <Copy size={14} />
-                <span>Duplicate Row</span>
-              </div>
-              <div className="context-menu-divider" />
-              <div
-                className="context-menu-item"
-                onClick={() => onDeleteRow(contextMenu.index)}
-                style={{ color: 'var(--danger)' }}
-              >
-                <Trash2 size={14} />
-                <span>Delete Row</span>
-              </div>
+              {readOnly ? (
+                <div className="context-menu-item disabled" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
+                  <span>Read-Only Mode Active</span>
+                </div>
+              ) : (
+                <>
+                  <div className="context-menu-item" onClick={() => { onInsertRow(contextMenu.index, 'above'); setContextMenu(null); }}>
+                    <Plus size={14} />
+                    <span>Insert Above</span>
+                  </div>
+                  <div className="context-menu-item" onClick={() => { onInsertRow(contextMenu.index, 'below'); setContextMenu(null); }}>
+                    <Plus size={14} />
+                    <span>Insert Below</span>
+                  </div>
+                  <div className="context-menu-item" onClick={() => { onDuplicateRow(contextMenu.index); setContextMenu(null); }}>
+                    <Copy size={14} />
+                    <span>Duplicate Row</span>
+                  </div>
+                  <div className="context-menu-divider" />
+                  <div
+                    className="context-menu-item"
+                    onClick={() => { onDeleteRow(contextMenu.index); setContextMenu(null); }}
+                    style={{ color: 'var(--danger)' }}
+                  >
+                    <Trash2 size={14} />
+                    <span>Delete Row</span>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

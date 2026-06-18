@@ -1,0 +1,17 @@
+appId: com.ultracsv.editor
+productName: UltraCSV Editor
+directories:
+  output: dist-desktop
+  buildResources: assets
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: UltraCSV Editor
