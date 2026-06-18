@@ -159,9 +159,17 @@ export default function App() {
   // Web Worker ref
   const workerRef = useRef<Worker | null>(null);
 
+  // 1. Create worker once on mount
   useEffect(() => {
-    // Instantiate web worker
     workerRef.current = new CSVWorker();
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  // 2. Attach message listener using latest state/props
+  useEffect(() => {
+    if (!workerRef.current) return;
 
     workerRef.current.onmessage = (e) => {
       const { type, payload } = e.data;
@@ -249,10 +257,6 @@ export default function App() {
       } else if (type === 'PARSE_ERROR' || type === 'UNPARSE_ERROR') {
         showToast(payload, 'error');
       }
-    };
-
-    return () => {
-      workerRef.current?.terminate();
     };
   }, [fileName, reset]);
 

@@ -132,6 +132,24 @@ export const Grid: React.FC<GridProps> = ({
     return columnWidths.reduce((sum, w) => sum + w, 0) + 50; // +50 for row header
   }, [columnWidths]);
 
+  // Precompute left position for all columns (for sticky column freezing)
+  const columnLeftOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let currentLeft = 50; // space of row index header
+    for (let i = 0; i < columnWidths.length; i++) {
+      offsets.push(currentLeft);
+      currentLeft += columnWidths[i] || 120;
+    }
+    return offsets;
+  }, [columnWidths]);
+
+  // Precompute search matches set for O(1) lookups
+  const searchMatchesSet = useMemo(() => {
+    const set = new Set<string>();
+    searchMatches.forEach(m => set.add(`${m.row},${m.col}`));
+    return set;
+  }, [searchMatches]);
+
   // Check if a cell is selected
   const isCellSelected = useCallback((r: number, c: number) => {
     if (!selection) return false;
@@ -151,9 +169,9 @@ export const Grid: React.FC<GridProps> = ({
   const getSearchMatchStatus = useCallback((r: number, c: number) => {
     const activeMatch = searchMatches[searchIndex];
     const isActive = activeMatch && activeMatch.row === r && activeMatch.col === c;
-    const isMatched = searchMatches.some(m => m.row === r && m.col === c);
+    const isMatched = searchMatchesSet.has(`${r},${c}`);
     return { isActive, isMatched };
-  }, [searchMatches, searchIndex]);
+  }, [searchMatchesSet, searchIndex, searchMatches]);
 
   // Copy selection to clipboard (TSV format)
   const copySelection = useCallback(() => {
@@ -545,13 +563,7 @@ export const Grid: React.FC<GridProps> = ({
               {columns.map((col, c) => {
                 const isColFrozen = c < freezeCols;
                 const isFiltered = activeFilters[c] !== undefined && activeFilters[c] !== '';
-                const leftPos = isColFrozen ? (() => {
-                  let left = 50;
-                  for (let i = 0; i < c; i++) {
-                    left += columnWidths[i] || 120;
-                  }
-                  return left;
-                })() : undefined;
+                const leftPos = isColFrozen ? columnLeftOffsets[c] : undefined;
 
                 return (
                   <th
@@ -624,11 +636,7 @@ export const Grid: React.FC<GridProps> = ({
                       cellStyle.zIndex = isColFrozen ? 9 : 6;
 
                       if (isColFrozen) {
-                        let left = 50;
-                        for (let i = 0; i < c; i++) {
-                          left += columnWidths[i] || 120;
-                        }
-                        cellStyle.left = left;
+                        cellStyle.left = columnLeftOffsets[c];
                       }
 
                       if (isActive) {
@@ -710,11 +718,7 @@ export const Grid: React.FC<GridProps> = ({
 
                     if (isColFrozen) {
                       cellStyle.position = 'sticky';
-                      let left = 50;
-                      for (let i = 0; i < c; i++) {
-                        left += columnWidths[i] || 120;
-                      }
-                      cellStyle.left = left;
+                      cellStyle.left = columnLeftOffsets[c];
                       cellStyle.zIndex = 4;
                     }
 
