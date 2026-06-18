@@ -1,28 +1,35 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
+import { FlatCSVData, createFlatCSVProxy, stringArrayToFlatCSV } from '../utils/flatCSV';
 
 export interface HistoryState {
-  data: string[][];
+  data: FlatCSVData;
   columns: string[];
 }
 
-export function useHistory(initialData: string[][], initialColumns: string[]) {
+export function useHistory(initialData: string[][] | FlatCSVData, initialColumns: string[]) {
   const [state, setState] = useState<{
     history: HistoryState[];
     pointer: number;
-  }>(() => ({
-    history: [{ data: initialData, columns: initialColumns }],
-    pointer: 0,
-  }));
+  }>(() => {
+    const flat = initialData instanceof FlatCSVData 
+      ? initialData 
+      : stringArrayToFlatCSV(initialData);
+    return {
+      history: [{ data: flat, columns: initialColumns }],
+      pointer: 0,
+    };
+  });
 
-  const pushState = useCallback((newData: string[][], newColumns: string[]) => {
+  const pushState = useCallback((newData: string[][] | FlatCSVData, newColumns: string[]) => {
     setState(prev => {
       const newHistory = prev.history.slice(0, prev.pointer + 1);
       
-      // Deep clone data to avoid reference leaks mutating historical states
-      const clonedData = newData.map(row => [...row]);
+      const flat = newData instanceof FlatCSVData 
+        ? newData 
+        : stringArrayToFlatCSV(newData);
       const clonedCols = [...newColumns];
       
-      newHistory.push({ data: clonedData, columns: clonedCols });
+      newHistory.push({ data: flat, columns: clonedCols });
       
       if (newHistory.length > 50) {
         newHistory.shift();
@@ -59,17 +66,24 @@ export function useHistory(initialData: string[][], initialColumns: string[]) {
     });
   }, []);
 
-  const reset = useCallback((data: string[][], columns: string[]) => {
+  const reset = useCallback((data: string[][] | FlatCSVData, columns: string[]) => {
+    const flat = data instanceof FlatCSVData 
+      ? data 
+      : stringArrayToFlatCSV(data);
     setState({
-      history: [{ data: data.map(row => [...row]), columns: [...columns] }],
+      history: [{ data: flat, columns: [...columns] }],
       pointer: 0,
     });
   }, []);
 
-  const currentState = state.history[state.pointer] || { data: [], columns: [] };
+  const currentState = state.history[state.pointer] || { data: new FlatCSVData('', new Int32Array(0), new Int32Array(0), 0, 0), columns: [] };
+
+  const proxyData = useMemo(() => {
+    return createFlatCSVProxy(currentState.data);
+  }, [currentState.data]);
 
   return {
-    data: currentState.data,
+    data: proxyData,
     columns: currentState.columns,
     pushState,
     undo,

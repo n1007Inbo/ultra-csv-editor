@@ -72,7 +72,9 @@ export const Grid: React.FC<GridProps> = ({
 }) => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [viewportHeight, setViewportHeight] = useState(600);
+  const [viewportWidth, setViewportWidth] = useState(800);
   const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
 
   // Cell editing state
   const [isEditing, setIsEditing] = useState(false);
@@ -105,12 +107,13 @@ export const Grid: React.FC<GridProps> = ({
   }, [visibleRowIndices, data.length]);
   const numRows = rowIndices.length;
 
-  // Track viewport height using ResizeObserver
+  // Track viewport size using ResizeObserver
   useEffect(() => {
     if (!viewportRef.current) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setViewportHeight(entry.contentRect.height || 600);
+        setViewportWidth(entry.contentRect.width || 800);
       }
     });
     observer.observe(viewportRef.current);
@@ -121,6 +124,7 @@ export const Grid: React.FC<GridProps> = ({
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
     setScrollTop(target.scrollTop);
+    setScrollLeft(target.scrollLeft);
   };
 
   // Virtualization boundaries
@@ -150,6 +154,40 @@ export const Grid: React.FC<GridProps> = ({
     return set;
   }, [searchMatches]);
 
+  // Precompute visible columns indexes for bi-directional virtualization
+  const { startColIndex, endColIndex } = useMemo(() => {
+    let start = freezeCols; // skip frozen columns since they are always rendered
+    let end = columns.length - 1;
+
+    // Find start column index
+    for (let c = freezeCols; c < columns.length; c++) {
+      const colLeft = columnLeftOffsets[c];
+      const colRight = colLeft + (columnWidths[c] || 120);
+      if (colRight > scrollLeft) {
+        start = c;
+        break;
+      }
+    }
+
+    // Find end column index
+    for (let c = start; c < columns.length; c++) {
+      const colLeft = columnLeftOffsets[c];
+      if (colLeft > scrollLeft + viewportWidth) {
+        end = c;
+        break;
+      }
+    }
+
+    // Add a buffer of 2 columns on left and right for smooth scrolling
+    const startWithBuffer = Math.max(freezeCols, start - 2);
+    const endWithBuffer = Math.min(columns.length - 1, end + 2);
+
+    return {
+      startColIndex: startWithBuffer,
+      endColIndex: endWithBuffer
+    };
+  }, [scrollLeft, viewportWidth, columnLeftOffsets, columnWidths, columns.length, freezeCols]);
+
   // Check if a cell is selected
   const isCellSelected = useCallback((r: number, c: number) => {
     if (!selection) return false;
@@ -172,6 +210,181 @@ export const Grid: React.FC<GridProps> = ({
     const isMatched = searchMatchesSet.has(`${r},${c}`);
     return { isActive, isMatched };
   }, [searchMatchesSet, searchIndex, searchMatches]);
+
+  const renderHeaderCell = (c: number) => {
+    const col = columns[c];
+    const isColFrozen = c < freezeCols;
+    const isFiltered = activeFilters[c] !== undefined && activeFilters[c] !== '';
+    const leftPos = isColFrozen ? columnLeftOffsets[c] : undefined;
+
+    return (
+      <th
+        key={c}
+        className="grid-header-cell"
+        style={{
+          width: columnWidths[c],
+          position: 'sticky',
+          top: 0,
+          left: leftPos,
+          zIndex: isColFrozen ? 10 : 8,
+          height: '38px',
+        }}
+        onContextMenu={(e) => handleHeaderContextMenu(c, e)}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>{col}</span>
+          {isFiltered && <span style={{ color: 'var(--accent)', marginLeft: '4px', fontSize: '10px' }} title={`Filtered: "${activeFilters[c]}"`}>⚡</span>}
+        </div>
+        <div
+          className={`grid-header-resizer ${resizingCol === c ? 'resizing' : ''}`}
+          onMouseDown={(e) => handleResizeMouseDown(c, e)}
+        />
+      </th>
+    );
+  };
+
+  const renderHeaderCells = () => {
+    const cells: React.ReactNode[] = [];
+
+    // 1. Frozen column headers
+    for (let c = 0; c < freezeCols; c++) {
+      cells.push(renderHeaderCell(c));
+    }
+
+    // 2. Left spacer for column virtualization
+    if (startColIndex > freezeCols) {
+      cells.push(
+        <th
+          key={`left-header-spacer`}
+          colSpan={startColIndex - freezeCols}
+          style={{ padding: 0, border: 'none', background: 'transparent' }}
+        />
+      );
+    }
+
+    // 3. Visible column headers
+    for (let c = startColIndex; c <= endColIndex; c++) {
+      cells.push(renderHeaderCell(c));
+    }
+
+    // 4. Right spacer for column virtualization
+    if (endColIndex < columns.length - 1) {
+      cells.push(
+        <th
+          key={`right-header-spacer`}
+          colSpan={columns.length - 1 - endColIndex}
+          style={{ padding: 0, border: 'none', background: 'transparent' }}
+        />
+      );
+    }
+
+    return cells;
+  };
+
+  const renderCell = (r: number, c: number, isFrozenRow: boolean = false, rowIndexInFreeze: number = 0) => {
+    const row = data[r];
+    const selected = isCellSelected(r, c);
+    const active = isCellActive(r, c);
+    const { isActive, isMatched } = getSearchMatchStatus(r, c);
+    const isColFrozen = c < freezeCols;
+
+    let cellStyle: React.CSSProperties = {
+      width: columnWidths[c],
+    };
+
+    if (isFrozenRow) {
+      cellStyle.position = 'sticky';
+      cellStyle.top = 38 + rowIndexInFreeze * rowHeight;
+      cellStyle.zIndex = isColFrozen ? 9 : 6;
+    }
+
+    if (isColFrozen) {
+      cellStyle.position = 'sticky';
+      cellStyle.left = columnLeftOffsets[c];
+      if (!isFrozenRow) {
+        cellStyle.zIndex = 4;
+      }
+    }
+
+    if (isActive) {
+      cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+      cellStyle.outline = '2px solid #ffc107';
+      cellStyle.outlineOffset = '-2px';
+      cellStyle.zIndex = 11;
+    } else if (isMatched) {
+      cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.15)';
+    }
+
+    const isZebra = zebraStripes && r % 2 === 1;
+
+    return (
+      <td
+        key={c}
+        className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''} ${isZebra ? 'zebra' : ''}`}
+        style={cellStyle}
+        onMouseDown={(e) => handleCellMouseDown(r, c, e)}
+        onMouseEnter={() => handleCellMouseEnter(r, c)}
+        onDoubleClick={() => {
+          if (readOnly) return;
+          setIsEditing(true);
+          setEditValue(row[c] || '');
+        }}
+      >
+        {active && isEditing ? (
+          <input
+            ref={editorRef}
+            className="grid-cell-editor"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={saveEdit}
+          />
+        ) : (
+          row[c] || ''
+        )}
+      </td>
+    );
+  };
+
+  const renderRowCells = (r: number, isFrozenRow: boolean = false, rowIndexInFreeze: number = 0) => {
+    const row = data[r];
+    if (!row) return null;
+
+    const cells: React.ReactNode[] = [];
+
+    // 1. Render frozen columns (0 to freezeCols - 1)
+    for (let c = 0; c < freezeCols; c++) {
+      cells.push(renderCell(r, c, isFrozenRow, rowIndexInFreeze));
+    }
+
+    // 2. Render left spacer cell if startColIndex > freezeCols
+    if (startColIndex > freezeCols) {
+      cells.push(
+        <td
+          key={`left-spacer-${r}`}
+          colSpan={startColIndex - freezeCols}
+          style={{ padding: 0, border: 'none', background: 'transparent' }}
+        />
+      );
+    }
+
+    // 3. Render visible columns (startColIndex to endColIndex)
+    for (let c = startColIndex; c <= endColIndex; c++) {
+      cells.push(renderCell(r, c, isFrozenRow, rowIndexInFreeze));
+    }
+
+    // 4. Render right spacer cell if endColIndex < columns.length - 1
+    if (endColIndex < columns.length - 1) {
+      cells.push(
+        <td
+          key={`right-spacer-${r}`}
+          colSpan={columns.length - 1 - endColIndex}
+          style={{ padding: 0, border: 'none', background: 'transparent' }}
+        />
+      );
+    }
+
+    return cells;
+  };
 
   // Copy selection to clipboard (TSV format)
   const copySelection = useCallback(() => {
@@ -544,6 +757,12 @@ export const Grid: React.FC<GridProps> = ({
         style={{ width: totalWidth, height: totalHeight + 40 }} // 40 for header
       >
         <table className="virtual-table">
+          <colgroup>
+            <col style={{ width: '50px' }} />
+            {columns.map((_, c) => (
+              <col key={c} style={{ width: columnWidths[c] || 120 }} />
+            ))}
+          </colgroup>
           {/* Header Row */}
           <thead>
             <tr className="grid-header-row" style={{ height: 38 }}>
@@ -560,36 +779,7 @@ export const Grid: React.FC<GridProps> = ({
                   height: '38px',
                 }}
               />
-              {columns.map((col, c) => {
-                const isColFrozen = c < freezeCols;
-                const isFiltered = activeFilters[c] !== undefined && activeFilters[c] !== '';
-                const leftPos = isColFrozen ? columnLeftOffsets[c] : undefined;
-
-                return (
-                  <th
-                    key={c}
-                    className="grid-header-cell"
-                    style={{
-                      width: columnWidths[c],
-                      position: 'sticky',
-                      top: 0,
-                      left: leftPos,
-                      zIndex: isColFrozen ? 10 : 8,
-                      height: '38px',
-                    }}
-                    onContextMenu={(e) => handleHeaderContextMenu(c, e)}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span>{col}</span>
-                      {isFiltered && <span style={{ color: 'var(--accent)', marginLeft: '4px', fontSize: '10px' }} title={`Filtered: "${activeFilters[c]}"`}>⚡</span>}
-                    </div>
-                    <div
-                      className={`grid-header-resizer ${resizingCol === c ? 'resizing' : ''}`}
-                      onMouseDown={(e) => handleResizeMouseDown(c, e)}
-                    />
-                  </th>
-                );
-              })}
+              {renderHeaderCells()}
             </tr>
           </thead>
 
@@ -620,63 +810,7 @@ export const Grid: React.FC<GridProps> = ({
                     >
                       {r + 1}
                     </td>
-
-                    {columns.map((_, c) => {
-                      const selected = isCellSelected(r, c);
-                      const active = isCellActive(r, c);
-                      const { isActive, isMatched } = getSearchMatchStatus(r, c);
-                      const isColFrozen = c < freezeCols;
-
-                      let cellStyle: React.CSSProperties = {
-                        width: columnWidths[c],
-                      };
-
-                      cellStyle.position = 'sticky';
-                      cellStyle.top = 38 + idx * rowHeight;
-                      cellStyle.zIndex = isColFrozen ? 9 : 6;
-
-                      if (isColFrozen) {
-                        cellStyle.left = columnLeftOffsets[c];
-                      }
-
-                      if (isActive) {
-                        cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                        cellStyle.outline = '2px solid #ffc107';
-                        cellStyle.outlineOffset = '-2px';
-                        cellStyle.zIndex = 11;
-                      } else if (isMatched) {
-                        cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.15)';
-                      }
-
-                      const isZebra = zebraStripes && idx % 2 === 1;
-
-                      return (
-                        <td
-                          key={c}
-                          className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''} ${isZebra ? 'zebra' : ''}`}
-                          style={cellStyle}
-                          onMouseDown={(e) => handleCellMouseDown(r, c, e)}
-                          onMouseEnter={() => handleCellMouseEnter(r, c)}
-                          onDoubleClick={() => {
-                            if (readOnly) return;
-                            setIsEditing(true);
-                            setEditValue(row[c] || '');
-                          }}
-                        >
-                          {active && isEditing ? (
-                            <input
-                              ref={editorRef}
-                              className="grid-cell-editor"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onBlur={saveEdit}
-                            />
-                          ) : (
-                            row[c] || ''
-                          )}
-                        </td>
-                      );
-                    })}
+                    {renderRowCells(r, true, idx)}
                   </tr>
                 );
               })();
@@ -686,8 +820,7 @@ export const Grid: React.FC<GridProps> = ({
             <tr style={{ height: Math.max(0, (Math.max(freezeRows, startIndex) - freezeRows) * rowHeight) }} />
 
             {/* Virtualized Rows */}
-            {rowIndices.slice(Math.max(freezeRows, startIndex), endIndex + 1).map((r, relativeIndex) => {
-              const idx = Math.max(freezeRows, startIndex) + relativeIndex;
+            {rowIndices.slice(Math.max(freezeRows, startIndex), endIndex + 1).map((r) => {
               const row = data[r];
               if (!row) return null;
 
@@ -705,61 +838,7 @@ export const Grid: React.FC<GridProps> = ({
                   >
                     {r + 1}
                   </td>
-
-                  {columns.map((_, c) => {
-                    const selected = isCellSelected(r, c);
-                    const active = isCellActive(r, c);
-                    const { isActive, isMatched } = getSearchMatchStatus(r, c);
-                    const isColFrozen = c < freezeCols;
-
-                    let cellStyle: React.CSSProperties = {
-                      width: columnWidths[c],
-                    };
-
-                    if (isColFrozen) {
-                      cellStyle.position = 'sticky';
-                      cellStyle.left = columnLeftOffsets[c];
-                      cellStyle.zIndex = 4;
-                    }
-
-                    if (isActive) {
-                      cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                      cellStyle.outline = '2px solid #ffc107';
-                      cellStyle.outlineOffset = '-2px';
-                      cellStyle.zIndex = 11;
-                    } else if (isMatched) {
-                      cellStyle.backgroundColor = 'rgba(255, 235, 59, 0.15)';
-                    }
-
-                    const isZebra = zebraStripes && idx % 2 === 1;
-
-                    return (
-                      <td
-                        key={c}
-                        className={`grid-cell ${selected ? 'selected' : ''} ${active ? 'active' : ''} ${isZebra ? 'zebra' : ''}`}
-                        style={cellStyle}
-                        onMouseDown={(e) => handleCellMouseDown(r, c, e)}
-                        onMouseEnter={() => handleCellMouseEnter(r, c)}
-                        onDoubleClick={() => {
-                          if (readOnly) return;
-                          setIsEditing(true);
-                          setEditValue(row[c] || '');
-                        }}
-                      >
-                        {active && isEditing ? (
-                          <input
-                            ref={editorRef}
-                            className="grid-cell-editor"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={saveEdit}
-                          />
-                        ) : (
-                          row[c] || ''
-                        )}
-                      </td>
-                    );
-                  })}
+                  {renderRowCells(r, false)}
                 </tr>
               );
             })}

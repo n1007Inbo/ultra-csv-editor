@@ -9,6 +9,7 @@ import { LicenseModal } from './components/LicenseModal';
 import { useHistory } from './hooks/useHistory';
 import { UploadCloud, FileSpreadsheet, Sun, Moon, Info, Check, X, Download, Settings, Award } from 'lucide-react';
 import CSVWorker from './workers/csvParser.worker?worker';
+import { FlatCSVData } from './utils/flatCSV';
 
 export default function App() {
   const [hasActiveFile, setHasActiveFile] = useState(false);
@@ -174,51 +175,45 @@ export default function App() {
     workerRef.current.onmessage = (e) => {
       const { type, payload } = e.data;
       if (type === 'PARSE_SUCCESS') {
-        const parsedRows = payload.data as string[][];
-        const meta = payload.meta;
+        const { rawText, offsets, rowStartIndices, rowCount, maxCols, headers: parsedHeaders, meta } = payload;
 
-        if (parsedRows.length === 0) {
+        if (rowCount === 0) {
           showToast('CSV is empty', 'error');
           return;
         }
 
-        // Parse headers
         let headers: string[] = [];
-        let gridData: string[][] = [];
+        let headerOffset = 0;
 
-        // Simple header detection: if first row exists and columns length > 0
-        if (parsedRows.length > 0) {
-          headers = parsedRows[0].map((h, i) => (h ? h.trim() : `Column ${i + 1}`));
-          gridData = parsedRows.slice(1);
+        if (settings.hasHeader) {
+          headers = parsedHeaders.map((h: string, i: number) => (h ? h.trim() : `Column ${i + 1}`));
+          headerOffset = 1;
+        } else {
+          headers = Array.from({ length: maxCols }, (_, i) => getColLetter(i));
+          headerOffset = 0;
         }
 
-        // If no rows left in data, treat headers as first row of data and generate alphabet headers
-        if (gridData.length === 0) {
-          gridData = [parsedRows[0]];
-          headers = parsedRows[0].map((_, i) => getColLetter(i));
-        }
-
-        // Ensure all rows match headers length
-        const maxCols = headers.length;
-        const normalizedData = gridData.map(row => {
-          const newRow = [...row];
-          while (newRow.length < maxCols) newRow.push('');
-          return newRow.slice(0, maxCols);
-        });
+        const flatData = new FlatCSVData(
+          rawText,
+          rowStartIndices,
+          offsets,
+          rowCount,
+          maxCols,
+          headerOffset
+        );
 
         // Initialize column widths based on content size
         const widths = headers.map((header, colIndex) => {
           let maxLen = header.length;
-          // Check first 100 rows
-          const sampleRows = normalizedData.slice(0, 100);
-          sampleRows.forEach(row => {
-            const cellVal = row[colIndex] || '';
+          const sampleCount = Math.min(100, flatData.length);
+          for (let r = 0; r < sampleCount; r++) {
+            const cellVal = flatData.getCell(r, colIndex) || '';
             if (cellVal.length > maxLen) maxLen = cellVal.length;
-          });
+          }
           return Math.max(80, Math.min(300, maxLen * 8 + 22));
         });
 
-        reset(normalizedData, headers);
+        reset(flatData, headers);
         setColumnWidths(widths);
         setHasActiveFile(true);
         setActiveCell({ row: 0, col: 0 });
@@ -357,8 +352,9 @@ export default function App() {
     if (!workerRef.current) return;
     showToast('Exporting CSV...', 'info');
     
+    const plainData = data.map(row => [...row]);
     // Stitch headers back as first row of output if configured
-    const fullOutput = settings.hasHeader ? [columns, ...data] : data;
+    const fullOutput = settings.hasHeader ? [columns, ...plainData] : plainData;
     workerRef.current.postMessage({
       type: 'UNPARSE_CSV',
       payload: {
