@@ -43,6 +43,10 @@ export default function DownloadSection() {
               4 GB RAM minimum
             </span>
           </div>
+
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '24px', fontStyle: 'italic', maxWidth: '480px', margin: '24px auto 0' }}>
+            *Note: If Windows shows a Defender SmartScreen warning, right-click the downloaded .exe → select Properties → check "Unblock" under Security → click OK to run directly.
+          </p>
         </div>
       </div>
     </section>
