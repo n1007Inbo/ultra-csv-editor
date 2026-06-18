@@ -1,0 +1,22 @@
+{
+  "name": "Ultra CSV Editor",
+  "short_name": "UltraCSV",
+  "description": "An ultra-fast, premium CSV spreadsheet editor with advanced features, quick statistics, and interactive charts.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0b0e",
+  "theme_color": "#00f5d4",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}
